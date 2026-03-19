@@ -26,20 +26,45 @@ function Start-InstallProcess {
 
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
+    $launcherFile = Join-Path ([System.IO.Path]::GetTempPath()) ('telegram_codex_bridge_install_' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $payload = [ordered]@{
+        InstallScript = $installScript
+        InstallDir = $InstallDir
+        BotToken = $BotToken
+        AllowedChatIds = $AllowedChatIds
+        DefaultCwd = $DefaultCwd
+        TelegramProjects = $TelegramProjects
+        UpdateManifestUrl = $UpdateManifestUrl
+        AutoInstallDependencies = $AutoInstallDependencies
+        RegisterTask = $RegisterTask
+        CreateDesktopShortcut = $CreateDesktopShortcut
+        StartNow = $StartNow
+    }
+    $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
+    $launcherLines = @(
+        '$ErrorActionPreference = ''Stop'''
+        "`$payload = @'"
+        $payloadJson
+        "'@ | ConvertFrom-Json"
+        '$params = @{'
+        '    InstallDir = [string]$payload.InstallDir'
+        '    BotToken = [string]$payload.BotToken'
+        '    AllowedChatIds = [string]$payload.AllowedChatIds'
+        '    DefaultCwd = [string]$payload.DefaultCwd'
+        '    TelegramProjects = [string]$payload.TelegramProjects'
+        '    UpdateManifestUrl = [string]$payload.UpdateManifestUrl'
+        '    AutoInstallDependencies = [bool]$payload.AutoInstallDependencies'
+        '    RegisterTask = [bool]$payload.RegisterTask'
+        '    CreateDesktopShortcut = [bool]$payload.CreateDesktopShortcut'
+        '    StartNow = [bool]$payload.StartNow'
+        '}'
+        '& ([string]$payload.InstallScript) @params'
+    )
+    Set-Content -Path $launcherFile -Value $launcherLines -Encoding UTF8
     $args = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-File', $installScript,
-        '-InstallDir', $InstallDir,
-        '-BotToken', $BotToken,
-        '-AllowedChatIds', $AllowedChatIds,
-        '-DefaultCwd', $DefaultCwd,
-        '-TelegramProjects', $TelegramProjects,
-        '-UpdateManifestUrl', $UpdateManifestUrl,
-        ('-AutoInstallDependencies:' + $AutoInstallDependencies.ToString().ToLower()),
-        ('-RegisterTask:' + $RegisterTask.ToString().ToLower()),
-        ('-CreateDesktopShortcut:' + $CreateDesktopShortcut.ToString().ToLower()),
-        ('-StartNow:' + $StartNow.ToString().ToLower())
+        '-File', $launcherFile
     )
 
     try {
@@ -47,6 +72,7 @@ function Start-InstallProcess {
     } catch {
         if (Test-Path $outFile) { Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
         if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $launcherFile) { Remove-Item $launcherFile -Force -ErrorAction SilentlyContinue }
         throw
     }
 
@@ -54,6 +80,7 @@ function Start-InstallProcess {
         Process = $proc
         StdOutPath = $outFile
         StdErrPath = $errFile
+        LauncherPath = $launcherFile
     }
 }
 
@@ -89,6 +116,9 @@ function Cleanup-InstallProcess {
         if (Test-Path $path) {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
         }
+    }
+    if ($InstallRun.PSObject.Properties.Name -contains 'LauncherPath' -and (Test-Path $InstallRun.LauncherPath)) {
+        Remove-Item $InstallRun.LauncherPath -Force -ErrorAction SilentlyContinue
     }
 }
 
