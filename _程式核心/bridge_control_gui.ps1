@@ -12,6 +12,17 @@ $installGuiScript = Join-Path $PSScriptRoot 'install_bridge_gui.ps1'
 $iconPath = Join-Path $PSScriptRoot 'assets\codex_bridge.ico'
 $heroPath = Join-Path $PSScriptRoot 'assets\codex_welcome.png'
 
+function Load-ImageCopy([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $stream = New-Object System.IO.MemoryStream(,$bytes)
+    try {
+        $image = [System.Drawing.Image]::FromStream($stream)
+        return New-Object System.Drawing.Bitmap($image)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Invoke-BridgeAction {
     param(
         [string]$Action,
@@ -70,6 +81,7 @@ function Format-SummaryText([object]$Status) {
     $lines = @(
         ('Folder: ' + [string]$Status.Folder),
         ('Version: ' + [string]$Status.CurrentVersion),
+        ('Config: ' + $(if ($Status.ConfigMessage) { [string]$Status.ConfigMessage } else { 'unknown' })),
         ('Task Scheduler: ' + [string]$Status.TaskState),
         ('Processes: ' + [string]$Status.ProcessSummary),
         ('Update Source: ' + $(if ($Status.UpdateManifestUrl) { [string]$Status.UpdateManifestUrl } else { 'not configured' })),
@@ -104,7 +116,7 @@ if (Test-Path $heroPath) {
     $picture.Location = New-Object System.Drawing.Point(28, 18)
     $picture.Size = New-Object System.Drawing.Size(118, 118)
     $picture.SizeMode = 'Zoom'
-    $picture.Image = [System.Drawing.Image]::FromFile($heroPath)
+    $picture.Image = Load-ImageCopy $heroPath
     $headerPanel.Controls.Add($picture)
 }
 
@@ -207,7 +219,8 @@ $actions = @(
     @{ Label = 'Check Update'; X = 192; Y = 156; Action = 'check-update'; Tone = '#dbe9f1'; Fore = '#12384b'; Width = 150 },
     @{ Label = 'Update Now'; X = 362; Y = 156; Action = 'apply-update'; Tone = '#ddebdc'; Fore = '#214d27'; Width = 150 },
     @{ Label = 'Set Update Source'; X = 22; Y = 210; Action = 'set-update-manifest'; Tone = '#efe7d8'; Fore = '#111111'; Width = 220 },
-    @{ Label = 'Install / Repair'; X = 262; Y = 210; Action = 'open-installer'; Tone = '#efe7d8'; Fore = '#111111'; Width = 160 }
+    @{ Label = 'Install / Repair'; X = 262; Y = 210; Action = 'open-installer'; Tone = '#efe7d8'; Fore = '#111111'; Width = 160 },
+    @{ Label = 'Uninstall'; X = 442; Y = 210; Action = 'uninstall'; Tone = '#f7d7d1'; Fore = '#722b1f'; Width = 150 }
 )
 
 $summaryBox = New-Object System.Windows.Forms.TextBox
@@ -284,6 +297,12 @@ function Refresh-StatusUi {
     }
 }
 
+$invokeBridgeAction = ${function:Invoke-BridgeAction}
+$getBridgeStatusObject = ${function:Get-BridgeStatusObject}
+$openInstallerGui = ${function:Open-InstallerGui}
+$refreshStatusUi = ${function:Refresh-StatusUi}
+$uninstallScript = Join-Path $PSScriptRoot 'uninstall_bridge.ps1'
+
 foreach ($entry in $actions) {
     $button = New-Object System.Windows.Forms.Button
     $button.Text = $entry.Label
@@ -301,26 +320,48 @@ foreach ($entry in $actions) {
         [System.Windows.Forms.Application]::DoEvents()
         try {
             if ($actionName -eq 'open-installer') {
-                Open-InstallerGui
+                & $openInstallerGui
                 $lastAction.Text = ('Last action: ' + $actionLabel)
                 $statusBox.Text = 'Opened the installer / repair wizard.'
+                return
+            }
+            if ($actionName -eq 'uninstall') {
+                $decision = [System.Windows.Forms.MessageBox]::Show(
+                    'This will stop the bridge, remove startup integration, delete the desktop shortcut, and remove the installed folder. Continue?',
+                    'Telegram Codex Bridge',
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) {
+                    $statusBox.Text = 'Uninstall canceled.'
+                    $lastAction.Text = 'Last action: Uninstall canceled'
+                    return
+                }
+                Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-File', $uninstallScript
+                ) -WorkingDirectory $PSScriptRoot | Out-Null
+                $statusBox.Text = 'Uninstall started. This control panel will now close.'
+                $lastAction.Text = ('Last action: ' + $actionLabel)
+                $form.Close()
                 return
             }
 
             $result = $null
             if ($actionName -eq 'set-update-manifest') {
-                $status = Get-BridgeStatusObject
+                $status = & $getBridgeStatusObject
                 $input = [Microsoft.VisualBasic.Interaction]::InputBox('Paste the GitHub update manifest URL. Type CLEAR to remove it.', 'Set Update Source', [string]$status.UpdateManifestUrl)
                 $normalized = $input.Trim()
                 if ([string]::IsNullOrWhiteSpace($normalized)) {
                     $result = 'Update source unchanged.'
                 } elseif ($normalized.ToUpperInvariant() -eq 'CLEAR') {
-                    $result = Invoke-BridgeAction -Action $actionName -ManifestUrl ''
+                    $result = & $invokeBridgeAction -Action $actionName -ManifestUrl ''
                 } else {
-                    $result = Invoke-BridgeAction -Action $actionName -ManifestUrl $normalized
+                    $result = & $invokeBridgeAction -Action $actionName -ManifestUrl $normalized
                 }
             } elseif ($actionName -eq 'check-update') {
-                $json = Invoke-BridgeAction -Action $actionName
+                $json = & $invokeBridgeAction -Action $actionName
                 try {
                     $update = $json | ConvertFrom-Json
                     $result = @(
@@ -336,7 +377,7 @@ foreach ($entry in $actions) {
                     $result = $json
                 }
             } else {
-                $result = Invoke-BridgeAction -Action $actionName
+                $result = & $invokeBridgeAction -Action $actionName
             }
             $lastAction.Text = ('Last action: ' + $actionLabel)
             if ($result) {
@@ -347,7 +388,7 @@ foreach ($entry in $actions) {
             $lastAction.Text = ('Last action failed: ' + $actionLabel)
         } finally {
             $form.UseWaitCursor = $false
-            Refresh-StatusUi
+            & $refreshStatusUi
         }
     }.GetNewClosure()
     $button.Add_Click($handler)
@@ -359,13 +400,16 @@ $refreshButton.Text = 'Refresh'
 $refreshButton.Size = New-Object System.Drawing.Size(100, 36)
 $refreshButton.Location = New-Object System.Drawing.Point(804, 14)
 $refreshButton.FlatStyle = 'Flat'
-$refreshButton.Add_Click({ Refresh-StatusUi -RefreshOutput })
+$refreshButton.Add_Click({ & $refreshStatusUi -RefreshOutput })
 $card.Controls.Add($refreshButton)
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 5000
-$timer.Add_Tick({ Refresh-StatusUi })
+$timer.Add_Tick({ & $refreshStatusUi })
 $timer.Start()
 
-Refresh-StatusUi -RefreshOutput
+& $refreshStatusUi -RefreshOutput
 [void]$form.ShowDialog()
+
+
+

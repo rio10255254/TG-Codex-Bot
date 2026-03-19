@@ -55,6 +55,19 @@ if (-not $PSBoundParameters.ContainsKey('UpdateManifestUrl')) {
     $UpdateManifestUrl = Read-Host 'GitHub update manifest URL (optional, can be left blank for now)'
 }
 
+function Normalize-BotToken([string]$Value) {
+    return ([string]$Value -replace '\s', '').Trim()
+}
+
+function Test-BotTokenLooksValid([string]$Value) {
+    return [bool]([string]$Value -match '^\d{6,}:[A-Za-z0-9_-]{30,}$')
+}
+
+$BotToken = Normalize-BotToken $BotToken
+if ($BotToken -and -not (Test-BotTokenLooksValid $BotToken)) {
+    throw 'Telegram bot token looks invalid. Paste the full token from @BotFather without spaces or line breaks.'
+}
+
 function Read-EnvFile([string]$Path) {
     $map = [ordered]@{}
     if (Test-Path $Path) {
@@ -84,25 +97,69 @@ function Get-CommandSourceOrEmpty([string]$Name) {
     return ""
 }
 
+function Invoke-LoggedProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$Label,
+        [int]$TimeoutSeconds = 900
+    )
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        Write-Output ($Label + "...")
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+            } catch {
+            }
+            throw ($Label + " timed out after " + $TimeoutSeconds + " seconds.")
+        }
+
+        $stdout = if (Test-Path $stdoutPath) { Get-Content $stdoutPath -Raw -Encoding UTF8 } else { '' }
+        $stderr = if (Test-Path $stderrPath) { Get-Content $stderrPath -Raw -Encoding UTF8 } else { '' }
+        if ($stdout) {
+            Write-Output $stdout.TrimEnd()
+        }
+        if ($stderr) {
+            Write-Output $stderr.TrimEnd()
+        }
+        if ($proc.ExitCode -ne 0) {
+            throw ($Label + " failed with exit code " + $proc.ExitCode + ".")
+        }
+    } finally {
+        if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $stderrPath) { Remove-Item $stderrPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Ensure-WingetPackage([string]$Id, [string]$Label) {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if (-not $winget) {
         throw "winget is required to auto-install $Label on this machine."
     }
-    Write-Output ("Installing " + $Label + " via winget...")
-    & $winget.Source install --id $Id --accept-package-agreements --accept-source-agreements --silent --disable-interactivity
-    if ($LASTEXITCODE -ne 0) {
-        throw ("Failed to install " + $Label + " via winget.")
-    }
+    Invoke-LoggedProcess -FilePath $winget.Source -Arguments @(
+        'install',
+        '--id', $Id,
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity'
+    ) -Label ("Installing " + $Label + " via winget") -TimeoutSeconds 1800
 }
 
 function Ensure-PythonRuntime {
+    Write-Output 'Checking Python runtime...'
     $python = Get-CommandSourceOrEmpty 'python'
     if ($python) {
+        Write-Output ('Python already available: ' + $python)
         return $python
     }
     $pyLauncher = Get-CommandSourceOrEmpty 'py'
     if ($pyLauncher) {
+        Write-Output ('Python launcher already available: ' + $pyLauncher)
         return $pyLauncher
     }
     if (-not $AutoInstallDependencies) {
@@ -121,9 +178,12 @@ function Ensure-PythonRuntime {
 }
 
 function Ensure-NodeRuntime {
+    Write-Output 'Checking Node.js runtime...'
     $node = Get-CommandSourceOrEmpty 'node'
     $npm = Get-CommandSourceOrEmpty 'npm'
     if ($node -and $npm) {
+        Write-Output ('Node already available: ' + $node)
+        Write-Output ('npm already available: ' + $npm)
         return @{ node = $node; npm = $npm }
     }
     if (-not $AutoInstallDependencies) {
@@ -139,23 +199,22 @@ function Ensure-NodeRuntime {
 }
 
 function Ensure-CodexCli {
+    Write-Output 'Checking Codex CLI...'
     $codex = Get-CommandSourceOrEmpty 'codex'
     if ($codex) {
+        Write-Output ('Codex already available: ' + $codex)
         return $codex
     }
     $codexCmd = Get-CommandSourceOrEmpty 'codex.cmd'
     if ($codexCmd) {
+        Write-Output ('Codex already available: ' + $codexCmd)
         return $codexCmd
     }
     if (-not $AutoInstallDependencies) {
         throw "Codex CLI was not found."
     }
     $nodeTools = Ensure-NodeRuntime
-    Write-Output "Installing Codex CLI via npm..."
-    cmd /c npm install -g @openai/codex
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install Codex CLI with npm."
-    }
+    Invoke-LoggedProcess -FilePath 'cmd.exe' -Arguments @('/c', 'npm', 'install', '-g', '@openai/codex') -Label 'Installing Codex CLI via npm' -TimeoutSeconds 1800
     $codex = Get-CommandSourceOrEmpty 'codex'
     if ($codex) {
         return $codex
@@ -230,10 +289,12 @@ function Copy-DirectoryContents([string]$SourceDir, [string]$TargetDir) {
 
 function Copy-BridgeFiles([string]$SourceRoot, [string]$TargetRoot) {
     $items = @(
-        '01_OPEN_CONTROL_PANEL.cmd',
-        '02_INSTALL_ON_THIS_PC.cmd',
+        '01_INSTALL_ON_THIS_PC.cmd',
+        '02_OPEN_CONTROL_PANEL.cmd',
+        '04_UNINSTALL_ON_THIS_PC.cmd',
         '_launch_open_control_panel.ps1',
         '_launch_install_on_this_pc.ps1',
+        '_launch_uninstall_on_this_pc.ps1',
         '03_MANUAL_zh-TW.md',
         'README.md',
         '.gitignore',
@@ -249,6 +310,7 @@ function Copy-BridgeFiles([string]$SourceRoot, [string]$TargetRoot) {
         'build_portable_package.ps1',
         'install_bridge.ps1',
         'install_bridge_gui.ps1',
+        'uninstall_bridge.ps1',
         'INSTALL_TELEGRAM_CODEX_BRIDGE.cmd',
         'OPEN_TELEGRAM_CODEX_BRIDGE.cmd',
         'start_bot.ps1',
@@ -294,11 +356,13 @@ $codexRuntime = Ensure-CodexCli
 Write-Output ("Python ready: " + $pythonRuntime)
 Write-Output ("Codex ready: " + $codexRuntime)
 
+Write-Section 'Copy Files'
 Copy-BridgeFiles -SourceRoot $PackageRoot -TargetRoot $InstallDir
 
+Write-Section 'Write Config'
 $envPath = Join-Path $InstallDir '_程式核心\.env.local'
 $existing = Read-EnvFile $envPath
-$existing['TELEGRAM_BOT_TOKEN'] = if ($BotToken) { $BotToken } else { [string]($existing['TELEGRAM_BOT_TOKEN']) }
+$existing['TELEGRAM_BOT_TOKEN'] = if ($BotToken) { Normalize-BotToken $BotToken } else { Normalize-BotToken ([string]($existing['TELEGRAM_BOT_TOKEN'])) }
 $existing['TELEGRAM_ALLOWED_CHAT_IDS'] = if ($AllowedChatIds) { $AllowedChatIds } else { [string]($existing['TELEGRAM_ALLOWED_CHAT_IDS']) }
 $existing['CODEX_DEFAULT_CWD'] = if ($DefaultCwd) { $DefaultCwd } else { [string]($existing['CODEX_DEFAULT_CWD']) }
 $existing['TELEGRAM_PROJECTS'] = if ($TelegramProjects) { $TelegramProjects } else { [string]($existing['TELEGRAM_PROJECTS']) }
@@ -332,6 +396,7 @@ Write-Output ("App version: " + $appVersion)
 
 $controlScript = Join-Path $InstallDir '_程式核心\bridge_control.ps1'
 if ($RegisterTask) {
+    Write-Section 'Register Task Scheduler'
     $taskName = 'TelegramCodexBridge'
     $scriptPath = Join-Path $InstallDir '_程式核心\start_bot.ps1'
     $workingDir = Join-Path $InstallDir '_程式核心'
@@ -348,17 +413,23 @@ if ($RegisterTask) {
 }
 
 if ($CreateDesktopShortcut) {
+    Write-Section 'Create Desktop Shortcut'
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlScript -Action create-shortcut
 }
 
 if ($StartNow) {
+    Write-Section 'Start Bridge'
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlScript -Action start
 }
 
 Write-Output ""
 Write-Output "Next steps:"
-Write-Output "1. Open the desktop shortcut 'Telegram Codex Bridge' or the file '01_OPEN_CONTROL_PANEL.cmd'."
+Write-Output "1. Open the desktop shortcut 'Telegram Codex Bridge' or the file '02_OPEN_CONTROL_PANEL.cmd'."
 Write-Output "2. Open the bot in Telegram and send /start."
 Write-Output "3. If no allowlist is set yet, the first Telegram chat can claim the bridge directly from Telegram."
 Write-Output "4. Later, an authorized admin chat can add more users with /allow <chat_id>."
+
+
+
+
 

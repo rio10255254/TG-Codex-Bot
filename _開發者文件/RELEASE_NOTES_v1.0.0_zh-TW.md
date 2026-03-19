@@ -27,8 +27,9 @@
 
 - `GitHub_可發佈版.zip`
 - `03_MANUAL_zh-TW.md`
-- `01_OPEN_CONTROL_PANEL.cmd`
-- `02_INSTALL_ON_THIS_PC.cmd`
+- `01_INSTALL_ON_THIS_PC.cmd`
+- `02_OPEN_CONTROL_PANEL.cmd`
+- `04_UNINSTALL_ON_THIS_PC.cmd`
 - `_程式核心/`
 - `_開發者文件/`
 
@@ -37,8 +38,8 @@
 一般使用者：
 
 1. 解壓安裝包
-2. 執行 `02_INSTALL_ON_THIS_PC.cmd`
-3. 安裝完成後執行 `01_OPEN_CONTROL_PANEL.cmd`
+2. 執行 `01_INSTALL_ON_THIS_PC.cmd`
+3. 安裝完成後執行 `02_OPEN_CONTROL_PANEL.cmd`
 4. 到 Telegram 對 bot 發 `/start`
 
 ## 注意事項

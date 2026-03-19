@@ -26,6 +26,53 @@ $manualStopPath = Join-Path $dataDir 'bot.manual_stop'
 $appConfigPath = Join-Path $dataDir 'app_config.json'
 $versionPath = Join-Path $PSScriptRoot 'APP_VERSION.json'
 $updaterScript = Join-Path $PSScriptRoot 'update_bridge.ps1'
+$envLocalPath = Join-Path $PSScriptRoot '.env.local'
+$envPath = Join-Path $PSScriptRoot '.env'
+
+function Read-EnvFile([string]$Path) {
+    $map = [ordered]@{}
+    if (!(Test-Path $Path)) {
+        return $map
+    }
+    foreach ($line in Get-Content $Path -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith('#')) {
+            continue
+        }
+        $pair = $line.Split('=', 2)
+        if ($pair.Count -eq 2) {
+            $map[$pair[0].Trim()] = $pair[1]
+        }
+    }
+    return $map
+}
+
+function Get-BridgeConfigState {
+    $envMap = [ordered]@{}
+    foreach ($path in @($envPath, $envLocalPath)) {
+        foreach ($entry in (Read-EnvFile $path).GetEnumerator()) {
+            $envMap[$entry.Key] = $entry.Value
+        }
+    }
+
+    $token = [string]$envMap['TELEGRAM_BOT_TOKEN']
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return [pscustomobject]@{
+            IsConfigured = $false
+            Message = 'Bridge is not configured yet. Run the installer and save a Telegram bot token first.'
+        }
+    }
+    if ($token -match '\s' -or $token -notmatch '^\d{6,}:[A-Za-z0-9_-]{30,}$') {
+        return [pscustomobject]@{
+            IsConfigured = $false
+            Message = 'Telegram bot token looks invalid. Re-run the installer and paste the full token from @BotFather.'
+        }
+    }
+
+    return [pscustomobject]@{
+        IsConfigured = $true
+        Message = 'Configured.'
+    }
+}
 
 function Get-BridgeProcessRecords {
     try {
@@ -265,6 +312,7 @@ function Show-BridgeStatus {
     Write-Output 'Telegram Codex Bridge'
     Write-Output ('Folder: ' + $status.Folder)
     Write-Output ('Version: ' + $status.CurrentVersion)
+    Write-Output ('Config: ' + $status.ConfigMessage)
     Write-Output ('Task Scheduler: ' + $status.TaskState)
     Write-Output ('Processes: ' + $status.ProcessSummary)
     Write-Output ('Update Source: ' + $(if ($status.UpdateManifestUrl) { $status.UpdateManifestUrl } else { 'not configured' }))
@@ -292,6 +340,7 @@ function Get-BridgeStatusObject {
     $procs = Get-BridgeProcessRecords
     $info = $null
     $config = Get-AppConfigObject
+    $bridgeConfig = Get-BridgeConfigState
     if ($task) {
         $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
     }
@@ -311,10 +360,17 @@ function Get-BridgeStatusObject {
         LastUpdateCheck = [string]$config.last_update_check
         LastAvailableVersion = [string]$config.last_available_version
         LastUpdateStatus = [string]$config.last_update_status
+        IsConfigured = [bool]$bridgeConfig.IsConfigured
+        ConfigMessage = [string]$bridgeConfig.Message
     }
 }
 
 function Start-Bridge {
+    $bridgeConfig = Get-BridgeConfigState
+    if (-not $bridgeConfig.IsConfigured) {
+        throw [System.InvalidOperationException]::new([string]$bridgeConfig.Message)
+    }
+
     if (Test-Path $manualStopPath) {
         Remove-Item $manualStopPath -Force -ErrorAction SilentlyContinue
     }
@@ -398,7 +454,7 @@ function Create-DesktopShortcut {
     }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $publicCmd = Join-Path $packageRoot '01_OPEN_CONTROL_PANEL.cmd'
+    $publicCmd = Join-Path $packageRoot '02_OPEN_CONTROL_PANEL.cmd'
     $shortcut.TargetPath = $(if (Test-Path $publicCmd) { $publicCmd } else { $guiCmd })
     $shortcut.WorkingDirectory = $(if (Test-Path $publicCmd) { $packageRoot } else { $PSScriptRoot })
     if (Test-Path $iconPath) {
@@ -440,3 +496,6 @@ switch ($Action) {
         break
     }
 }
+
+
+

@@ -95,6 +95,8 @@ Telegram bot token 的取得方式：
   重新產生可分發 zip
 - `Shortcut`
   重建桌面捷徑
+- `Uninstall`
+  完整移除此電腦上的 bridge 安裝
 
 ---
 
@@ -201,7 +203,30 @@ Telegram bot token 的取得方式：
 
 ---
 
-## 9. 如果我換了電腦
+## 9. 如果要完整移除
+
+你可以用任一種方式：
+
+1. 在控制面板按 `Uninstall`
+2. 或雙擊：
+   - `04_UNINSTALL_ON_THIS_PC.cmd`
+
+解除安裝會：
+
+- 停止 bridge
+- 移除開機自動啟動
+- 移除桌面捷徑
+- 移除本機安裝資料夾
+
+不會主動移除系統共用依賴，例如：
+
+- Python
+- Node.js
+- Codex CLI
+
+---
+
+## 10. 如果我換了電腦
 
 你不需要把整套重新手工搭一次。
 
@@ -219,7 +244,7 @@ Telegram bot token 的取得方式：
 
 ---
 
-## 10. 安全提醒
+## 11. 安全提醒
 
 這套 bridge 目前設計是高權限模式：
 
@@ -239,7 +264,7 @@ Telegram bot token 的取得方式：
 
 ---
 
-## 11. 給交付對象的一句話版本
+## 12. 給交付對象的一句話版本
 
 如果你只是想知道最短操作：
 
@@ -248,4 +273,3 @@ Telegram bot token 的取得方式：
 3. 雙擊桌面 `Telegram Codex Bridge`
 4. 到 Telegram 對 bot 發 `/start`
 5. 點授權按鈕或直接開始用
-

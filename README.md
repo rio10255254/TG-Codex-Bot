@@ -10,10 +10,12 @@
 ## 一般使用者怎麼用
 
 1. 安裝到這台電腦：
-   [02_INSTALL_ON_THIS_PC.cmd](./02_INSTALL_ON_THIS_PC.cmd)
-2. 打開控制面板：
-   [01_OPEN_CONTROL_PANEL.cmd](./01_OPEN_CONTROL_PANEL.cmd)
-3. 看繁中操作手冊：
+   [01_INSTALL_ON_THIS_PC.cmd](./01_INSTALL_ON_THIS_PC.cmd)
+2. 安裝完成後打開控制面板：
+   [02_OPEN_CONTROL_PANEL.cmd](./02_OPEN_CONTROL_PANEL.cmd)
+3. 如需移除此電腦上的安裝：
+   [04_UNINSTALL_ON_THIS_PC.cmd](./04_UNINSTALL_ON_THIS_PC.cmd)
+4. 看繁中操作手冊：
    [03_MANUAL_zh-TW.md](./03_MANUAL_zh-TW.md)
 
 ## GitHub 上傳建議

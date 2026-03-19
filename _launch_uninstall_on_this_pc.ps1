@@ -3,9 +3,9 @@ Add-Type -AssemblyName System.Windows.Forms
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $localEnv = Join-Path $root '_程式核心\.env.local'
-$localTarget = Join-Path $root '_程式核心\bridge_control_gui.ps1'
+$localTarget = Join-Path $root '_程式核心\uninstall_bridge.ps1'
 $installedRoot = Join-Path $env:USERPROFILE 'telegram_codex_bridge'
-$installedTarget = Join-Path $installedRoot '_程式核心\bridge_control_gui.ps1'
+$installedTarget = Join-Path $installedRoot '_程式核心\uninstall_bridge.ps1'
 
 if ((Test-Path $localEnv) -and (Test-Path $localTarget)) {
     & $localTarget
@@ -18,7 +18,7 @@ if (Test-Path $installedTarget) {
 }
 
 [System.Windows.Forms.MessageBox]::Show(
-    'Bridge is not installed yet. Run 01_INSTALL_ON_THIS_PC.cmd first.',
+    'Bridge is not installed yet, so there is nothing to uninstall.',
     'Telegram Codex Bridge',
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Information

@@ -10,6 +10,25 @@ $installScript = Join-Path $PSScriptRoot 'install_bridge.ps1'
 $iconPath = Join-Path $PSScriptRoot 'assets\codex_bridge.ico'
 $heroPath = Join-Path $PSScriptRoot 'assets\codex_welcome.png'
 
+function Load-ImageCopy([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $stream = New-Object System.IO.MemoryStream(,$bytes)
+    try {
+        $image = [System.Drawing.Image]::FromStream($stream)
+        return New-Object System.Drawing.Bitmap($image)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Normalize-BotToken([string]$Value) {
+    return ([string]$Value -replace '\s', '').Trim()
+}
+
+function Test-BotTokenLooksValid([string]$Value) {
+    return [bool]([string]$Value -match '^\d{6,}:[A-Za-z0-9_-]{30,}$')
+}
+
 function Start-InstallProcess {
     param(
         [string]$InstallDir,
@@ -24,9 +43,6 @@ function Start-InstallProcess {
         [bool]$StartNow
     )
 
-    $outFile = [System.IO.Path]::GetTempFileName()
-    $errFile = [System.IO.Path]::GetTempFileName()
-    $launcherFile = Join-Path ([System.IO.Path]::GetTempPath()) ('telegram_codex_bridge_install_' + [guid]::NewGuid().ToString('N') + '.ps1')
     $payload = [ordered]@{
         InstallScript = $installScript
         InstallDir = $InstallDir
@@ -60,27 +76,41 @@ function Start-InstallProcess {
         '}'
         '& ([string]$payload.InstallScript) @params'
     )
-    Set-Content -Path $launcherFile -Value $launcherLines -Encoding UTF8
-    $args = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $launcherFile
-    )
+    $launcherScript = $launcherLines -join "`r`n"
+    $encodedLauncher = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($launcherScript))
 
     try {
-        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $outputLines = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = 'powershell.exe'
+        $psi.Arguments = ('-NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ' + $encodedLauncher)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $null = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
+            if ($EventArgs.Data -ne $null) {
+                [void]$Event.MessageData.Add($EventArgs.Data)
+            }
+        } -MessageData $outputLines
+        $null = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
+            if ($EventArgs.Data -ne $null) {
+                [void]$Event.MessageData.Add($EventArgs.Data)
+            }
+        } -MessageData $outputLines
+        $null = $proc.Start()
+        $proc.BeginOutputReadLine()
+        $proc.BeginErrorReadLine()
     } catch {
-        if (Test-Path $outFile) { Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $launcherFile) { Remove-Item $launcherFile -Force -ErrorAction SilentlyContinue }
         throw
     }
 
     return [pscustomobject]@{
         Process = $proc
-        StdOutPath = $outFile
-        StdErrPath = $errFile
-        LauncherPath = $launcherFile
+        OutputLines = $outputLines
     }
 }
 
@@ -90,20 +120,50 @@ function Read-InstallOutput {
         [pscustomobject]$InstallRun
     )
 
-    $parts = @()
-    if (Test-Path $InstallRun.StdOutPath) {
-        $stdout = Get-Content $InstallRun.StdOutPath -Raw -Encoding UTF8
-        if ($stdout) {
-            $parts += $stdout.TrimEnd()
-        }
+    if (-not $InstallRun.OutputLines) {
+        return ''
     }
-    if (Test-Path $InstallRun.StdErrPath) {
-        $stderr = Get-Content $InstallRun.StdErrPath -Raw -Encoding UTF8
-        if ($stderr) {
-            $parts += $stderr.TrimEnd()
+    $snapshot = $InstallRun.OutputLines.ToArray()
+    $lines = foreach ($line in $snapshot) {
+        if ($null -eq $line) {
+            continue
         }
+        $text = [string]$line
+        if ($text -eq '#< CLIXML') {
+            continue
+        }
+        if ($text -like '<Objs *') {
+            continue
+        }
+        $text
     }
-    return ($parts -join "`r`n`r`n").Trim()
+    return ((@($lines) -join "`r`n")).Trim()
+}
+
+function Wait-InstallOutputSettled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$InstallRun,
+        [int]$MaxWaitMilliseconds = 2000,
+        [int]$StableChecks = 5
+    )
+
+    $lastCount = -1
+    $stable = 0
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($MaxWaitMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $currentCount = $InstallRun.OutputLines.Count
+        if ($currentCount -eq $lastCount) {
+            $stable += 1
+            if ($stable -ge $StableChecks) {
+                break
+            }
+        } else {
+            $stable = 0
+            $lastCount = $currentCount
+        }
+        Start-Sleep -Milliseconds 120
+    }
 }
 
 function Cleanup-InstallProcess {
@@ -112,13 +172,23 @@ function Cleanup-InstallProcess {
         [pscustomobject]$InstallRun
     )
 
-    foreach ($path in @($InstallRun.StdOutPath, $InstallRun.StdErrPath)) {
-        if (Test-Path $path) {
-            Remove-Item $path -Force -ErrorAction SilentlyContinue
+    Get-EventSubscriber | Where-Object {
+        $_.SourceObject -eq $InstallRun.Process
+    } | Unregister-Event -Force -ErrorAction SilentlyContinue
+
+    if ($InstallRun.Process) {
+        try {
+            $InstallRun.Process.CancelOutputRead()
+        } catch {
         }
-    }
-    if ($InstallRun.PSObject.Properties.Name -contains 'LauncherPath' -and (Test-Path $InstallRun.LauncherPath)) {
-        Remove-Item $InstallRun.LauncherPath -Force -ErrorAction SilentlyContinue
+        try {
+            $InstallRun.Process.CancelErrorRead()
+        } catch {
+        }
+        try {
+            $InstallRun.Process.Dispose()
+        } catch {
+        }
     }
 }
 
@@ -145,7 +215,7 @@ if (Test-Path $heroPath) {
     $hero.Location = New-Object System.Drawing.Point(24, 18)
     $hero.Size = New-Object System.Drawing.Size(106, 106)
     $hero.SizeMode = 'Zoom'
-    $hero.Image = [System.Drawing.Image]::FromFile($heroPath)
+    $hero.Image = Load-ImageCopy $heroPath
     $header.Controls.Add($hero)
 }
 
@@ -244,43 +314,6 @@ $panel.Controls.Add($statusBox)
 
 $activeInstall = $null
 $lastStatusSnapshot = ''
-$installTimer = New-Object System.Windows.Forms.Timer
-$installTimer.Interval = 700
-$installTimer.Add_Tick({
-    if (-not $activeInstall) {
-        return
-    }
-
-    $snapshot = Read-InstallOutput -InstallRun $activeInstall
-    if ($snapshot -ne $lastStatusSnapshot) {
-        $statusBox.Text = if ($snapshot) { $snapshot } else { "Installing bridge..." }
-        $statusBox.SelectionStart = $statusBox.TextLength
-        $statusBox.ScrollToCaret()
-        $lastStatusSnapshot = $snapshot
-    }
-
-    if (-not $activeInstall.Process.HasExited) {
-        return
-    }
-
-    $installTimer.Stop()
-    $exitCode = $activeInstall.Process.ExitCode
-    if (-not $lastStatusSnapshot) {
-        $statusBox.Text = Read-InstallOutput -InstallRun $activeInstall
-        $statusBox.SelectionStart = $statusBox.TextLength
-        $statusBox.ScrollToCaret()
-    }
-    Cleanup-InstallProcess -InstallRun $activeInstall
-    $activeInstall = $null
-    $form.UseWaitCursor = $false
-    $installButton.Enabled = $true
-
-    if ($exitCode -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show('Install completed.', 'Telegram Codex Bridge')
-    } else {
-        [System.Windows.Forms.MessageBox]::Show('Install finished with errors. Check the output box.', 'Telegram Codex Bridge')
-    }
-})
 
 $installButton = New-Object System.Windows.Forms.Button
 $installButton.Text = 'Install Now'
@@ -325,8 +358,14 @@ $browseCwd.Add_Click({
 })
 
 $installButton.Add_Click({
-    if ([string]::IsNullOrWhiteSpace($tokenBox.Text)) {
+    $normalizedToken = Normalize-BotToken $tokenBox.Text
+    $tokenBox.Text = $normalizedToken
+    if ([string]::IsNullOrWhiteSpace($normalizedToken)) {
         [System.Windows.Forms.MessageBox]::Show('Please enter a Telegram bot token.', 'Missing Token')
+        return
+    }
+    if (-not (Test-BotTokenLooksValid $normalizedToken)) {
+        [System.Windows.Forms.MessageBox]::Show('Telegram bot token looks invalid. Paste the full token from @BotFather without spaces or line breaks.', 'Invalid Token')
         return
     }
     if ([string]::IsNullOrWhiteSpace($installDirBox.Text)) {
@@ -343,16 +382,50 @@ $installButton.Add_Click({
     $lastStatusSnapshot = ''
     $statusBox.Text = "Installing bridge...`r`nLive output will appear here.`r`nThis may take a while if dependencies need to be installed."
     try {
-        $activeInstall = Start-InstallProcess -InstallDir $installDirBox.Text -BotToken $tokenBox.Text -AllowedChatIds $allowedBox.Text -DefaultCwd $cwdBox.Text -TelegramProjects $projectsBox.Text -UpdateManifestUrl $updateBox.Text -AutoInstallDependencies $autoDeps.Checked -RegisterTask $registerTask.Checked -CreateDesktopShortcut $desktopShortcut.Checked -StartNow $startNow.Checked
-        $installTimer.Start()
+        $activeInstall = Start-InstallProcess -InstallDir $installDirBox.Text -BotToken $normalizedToken -AllowedChatIds $allowedBox.Text -DefaultCwd $cwdBox.Text -TelegramProjects $projectsBox.Text -UpdateManifestUrl $updateBox.Text -AutoInstallDependencies $autoDeps.Checked -RegisterTask $registerTask.Checked -CreateDesktopShortcut $desktopShortcut.Checked -StartNow $startNow.Checked
+        while (-not $activeInstall.Process.HasExited) {
+            $snapshot = Read-InstallOutput -InstallRun $activeInstall
+            if ($snapshot -and $snapshot -ne $lastStatusSnapshot) {
+                $statusBox.Text = $snapshot
+                $statusBox.SelectionStart = $statusBox.TextLength
+                $statusBox.ScrollToCaret()
+                $lastStatusSnapshot = $snapshot
+            }
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 200
+        }
+
+        $activeInstall.Process.WaitForExit()
+        Wait-InstallOutputSettled -InstallRun $activeInstall
+        $finalSnapshot = Read-InstallOutput -InstallRun $activeInstall
+        if ($finalSnapshot) {
+            $statusBox.Text = $finalSnapshot
+            $statusBox.SelectionStart = $statusBox.TextLength
+            $statusBox.ScrollToCaret()
+            $lastStatusSnapshot = $finalSnapshot
+        }
+        $exitCode = $activeInstall.Process.ExitCode
+        if ($exitCode -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show('Install completed.', 'Telegram Codex Bridge')
+        } else {
+            [System.Windows.Forms.MessageBox]::Show('Install finished with errors. Check the output box.', 'Telegram Codex Bridge')
+        }
     } catch {
         $statusBox.Text = $_.Exception.Message
         [System.Windows.Forms.MessageBox]::Show('Failed to start install. Check the output box.', 'Telegram Codex Bridge')
+    } finally {
+        if ($activeInstall) {
+            Cleanup-InstallProcess -InstallRun $activeInstall
+            $activeInstall = $null
+        }
         $form.UseWaitCursor = $false
         $installButton.Enabled = $true
-    } finally {
     }
 })
 
 [void]$form.ShowDialog()
+
+
+
+
 
