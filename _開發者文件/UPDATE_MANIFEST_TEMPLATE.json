@@ -1,0 +1,8 @@
+{
+  "app_name": "Telegram Codex Bridge",
+  "version": "1.0.0",
+  "channel": "stable",
+  "package_url": "https://github.com/OWNER/REPO/releases/download/v1.0.0/GitHub_%E5%8F%AF%E7%99%BC%E4%BD%88%E7%89%88.zip",
+  "notes_url": "https://github.com/OWNER/REPO/releases/tag/v1.0.0",
+  "published_at": "2026-03-18T10:00:00Z"
+}

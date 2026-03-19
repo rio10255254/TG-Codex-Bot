@@ -1,0 +1,8 @@
+feat: publish Telegram Codex Bridge as a GitHub-ready distributable package
+
+- add desktop-oriented package layout with simple user entrypoints
+- add GUI control panel and GUI installer
+- add portable packaging flow and zh-TW user manual
+- add Telegram self-claim and runtime allow/revoke flow
+- add unified TG + local Codex session browser
+- harden supervisor start/stop/restart behavior
